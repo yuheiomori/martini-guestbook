@@ -1,13 +1,14 @@
 package render
 
 import (
-	"github.com/codegangsta/martini"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"testing"
+
+	"github.com/go-martini/martini"
 )
 
 type Greeting struct {
@@ -34,6 +35,30 @@ func Test_Render_JSON(t *testing.T) {
 	expect(t, res.Code, 300)
 	expect(t, res.Header().Get(ContentType), ContentJSON+"; charset=UTF-8")
 	expect(t, res.Body.String(), `{"one":"hello","two":"world"}`)
+}
+
+func Test_Render_Indented_JSON(t *testing.T) {
+	m := martini.Classic()
+	m.Use(Renderer(Options{
+		IndentJSON: true,
+	}))
+
+	// routing
+	m.Get("/foobar", func(r Render) {
+		r.JSON(300, Greeting{"hello", "world"})
+	})
+
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/foobar", nil)
+
+	m.ServeHTTP(res, req)
+
+	expect(t, res.Code, 300)
+	expect(t, res.Header().Get(ContentType), ContentJSON+"; charset=UTF-8")
+	expect(t, res.Body.String(), `{
+  "one": "hello",
+  "two": "world"
+}`)
 }
 
 func Test_Render_Bad_HTML(t *testing.T) {
@@ -74,6 +99,27 @@ func Test_Render_HTML(t *testing.T) {
 
 	expect(t, res.Code, 200)
 	expect(t, res.Header().Get(ContentType), ContentHTML+"; charset=UTF-8")
+	expect(t, res.Body.String(), "<h1>Hello jeremy</h1>\n")
+}
+
+func Test_Render_XHTML(t *testing.T) {
+	m := martini.Classic()
+	m.Use(Renderer(Options{
+		Directory:       "fixtures/basic",
+		HTMLContentType: ContentXHTML,
+	}))
+
+	m.Get("/foobar", func(r Render) {
+		r.HTML(200, "hello", "jeremy")
+	})
+
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/foobar", nil)
+
+	m.ServeHTTP(res, req)
+
+	expect(t, res.Code, 200)
+	expect(t, res.Header().Get(ContentType), ContentXHTML+"; charset=UTF-8")
 	expect(t, res.Body.String(), "<h1>Hello jeremy</h1>\n")
 }
 
@@ -146,6 +192,26 @@ func Test_Render_Layout(t *testing.T) {
 	expect(t, res.Body.String(), "head\n<h1>jeremy</h1>\n\nfoot\n")
 }
 
+func Test_Render_Layout_Current(t *testing.T) {
+	m := martini.Classic()
+	m.Use(Renderer(Options{
+		Directory: "fixtures/basic",
+		Layout:    "current_layout",
+	}))
+
+	// routing
+	m.Get("/foobar", func(r Render) {
+		r.HTML(200, "content", "jeremy")
+	})
+
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/foobar", nil)
+
+	m.ServeHTTP(res, req)
+
+	expect(t, res.Body.String(), "content head\n<h1>jeremy</h1>\n\ncontent foot\n")
+}
+
 func Test_Render_Nested_HTML(t *testing.T) {
 	m := martini.Classic()
 	m.Use(Renderer(Options{
@@ -187,6 +253,56 @@ func Test_Render_Delimiters(t *testing.T) {
 	expect(t, res.Code, 200)
 	expect(t, res.Header().Get(ContentType), ContentHTML+"; charset=UTF-8")
 	expect(t, res.Body.String(), "<h1>Hello jeremy</h1>")
+}
+
+func Test_Render_BinaryData(t *testing.T) {
+	m := martini.Classic()
+	m.Use(Renderer(Options{
+	// nothing here to configure
+	}))
+
+	// routing
+	m.Get("/foobar", func(r Render) {
+		r.Data(200, []byte("hello there"))
+	})
+
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/foobar", nil)
+
+	m.ServeHTTP(res, req)
+
+	expect(t, res.Code, 200)
+	expect(t, res.Header().Get(ContentType), ContentBinary)
+	expect(t, res.Body.String(), "hello there")
+}
+
+func Test_Render_BinaryData_CustomMimeType(t *testing.T) {
+	m := martini.Classic()
+	m.Use(Renderer(Options{
+	// nothing here to configure
+	}))
+
+	// routing
+	m.Get("/foobar", func(r Render) {
+		r.Header().Set(ContentType, "image/jpeg")
+		r.Data(200, []byte("..jpeg data.."))
+	})
+
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/foobar", nil)
+
+	m.ServeHTTP(res, req)
+
+	expect(t, res.Code, 200)
+	expect(t, res.Header().Get(ContentType), "image/jpeg")
+	expect(t, res.Body.String(), "..jpeg data..")
+}
+
+func Test_Render_Status204(t *testing.T) {
+	res := httptest.NewRecorder()
+	r := renderer{res, nil, nil, Options{}, ""}
+	r.Status(204)
+	expect(t, res.Code, 204)
 }
 
 func Test_Render_Error404(t *testing.T) {
@@ -272,6 +388,8 @@ func Test_Render_Default_Charset_HTML(t *testing.T) {
 
 	expect(t, res.Code, 200)
 	expect(t, res.Header().Get(ContentType), ContentHTML+"; charset=UTF-8")
+	// ContentLength should be deferred to the ResponseWriter and not Render
+	expect(t, res.Header().Get(ContentLength), "")
 	expect(t, res.Body.String(), "<h1>Hello jeremy</h1>\n")
 }
 
@@ -297,6 +415,39 @@ func Test_Render_Override_Layout(t *testing.T) {
 	expect(t, res.Code, 200)
 	expect(t, res.Header().Get(ContentType), ContentHTML+"; charset=UTF-8")
 	expect(t, res.Body.String(), "another head\n<h1>jeremy</h1>\n\nanother foot\n")
+}
+
+func Test_Render_NoRace(t *testing.T) {
+	// This test used to fail if run with -race
+	m := martini.Classic()
+	m.Use(Renderer(Options{
+		Directory: "fixtures/basic",
+	}))
+
+	// routing
+	m.Get("/foobar", func(r Render) {
+		r.HTML(200, "hello", "world")
+	})
+
+	done := make(chan bool)
+	doreq := func() {
+		res := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/foobar", nil)
+
+		m.ServeHTTP(res, req)
+
+		expect(t, res.Code, 200)
+		expect(t, res.Header().Get(ContentType), ContentHTML+"; charset=UTF-8")
+		// ContentLength should be deferred to the ResponseWriter and not Render
+		expect(t, res.Header().Get(ContentLength), "")
+		expect(t, res.Body.String(), "<h1>Hello world</h1>\n")
+		done <- true
+	}
+	// Run two requests to check there is no race condition
+	go doreq()
+	go doreq()
+	<-done
+	<-done
 }
 
 /* Test Helpers */

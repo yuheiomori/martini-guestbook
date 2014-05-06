@@ -1,7 +1,7 @@
-# render
+# render [![wercker status](https://app.wercker.com/status/fcf6b26a1b41f53540200b1949b48dec "wercker status")](https://app.wercker.com/project/bykey/fcf6b26a1b41f53540200b1949b48dec)
 Martini middleware/handler for easily rendering serialized JSON and HTML template responses.
 
-[API Reference](http://godoc.org/github.com/codegangsta/martini-contrib/render)
+[API Reference](http://godoc.org/github.com/martini-contrib/render)
 
 ## Usage
 render uses Go's [html/template](http://golang.org/pkg/html/template/) package to render html templates.
@@ -11,8 +11,8 @@ render uses Go's [html/template](http://golang.org/pkg/html/template/) package t
 package main
 
 import (
-  "github.com/codegangsta/martini"
-  "github.com/codegangsta/martini-contrib/render"
+  "github.com/go-martini/martini"
+  "github.com/martini-contrib/render"
 )
 
 func main() {
@@ -46,6 +46,8 @@ m.Use(render.Renderer(render.Options{
   Funcs: []template.FuncMap{AppHelpers}, // Specify helper function maps for templates to access.
   Delims: render.Delims{"{[{", "}]}"}, // Sets delimiters to the specified strings.
   Charset: "UTF-8", // Sets encoding for json and html content-types. Default is "UTF-8".
+  IndentJSON: true, // Output human readable JSON
+  HTMLContentType: "application/xhtml+xml", // Output XHTML content type instead of default "text/html"
 }))
 // ...
 ~~~
@@ -94,6 +96,19 @@ m.Use(render.Renderer(render.Options{
 </html>
 ~~~
 
+`current` can also be called to get the current template being rendered.
+~~~ html
+<!-- templates/layout.tmpl -->
+<html>
+  <head>
+    <title>Martini Plz</title>
+  </head>
+  <body>
+    This is the {{ current }} page.
+  </body>
+</html>
+~~~
+
 ### Character Encodings
 The `render.Renderer` middleware will automatically set the proper Content-Type header based on which function you call. See below for an example of what the default settings would output (note that UTF-8 is the default):
 ~~~ go
@@ -101,8 +116,8 @@ The `render.Renderer` middleware will automatically set the proper Content-Type 
 package main
 
 import (
-  "github.com/codegangsta/martini"
-  "github.com/codegangsta/martini-contrib/render"
+  "github.com/go-martini/martini"
+  "github.com/martini-contrib/render"
 )
 
 func main() {
@@ -130,8 +145,8 @@ In order to change the charset, you can set the `Charset` within the `render.Opt
 package main
 
 import (
-  "github.com/codegangsta/martini"
-  "github.com/codegangsta/martini-contrib/render"
+  "github.com/go-martini/martini"
+  "github.com/martini-contrib/render"
 )
 
 func main() {

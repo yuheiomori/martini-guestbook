@@ -3,9 +3,10 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"github.com/coopernurse/gorp"
 	"net/url"
 	"os"
+
+	"github.com/coopernurse/gorp"
 )
 
 // データソース文字列を変換
@@ -21,7 +22,8 @@ func initDb() *gorp.DbMap {
 	if os.Getenv("CLEARDB_DATABASE_URL") != "" {
 		datasource = convert_datasource(os.Getenv("CLEARDB_DATABASE_URL"))
 	} else {
-		datasource = "user:pass@/database_name?charset=utf8"
+		//		datasource = "root:pass@/database_name?charset=utf8"
+		datasource = "root@/martini_guestbook?charset=utf8"
 	}
 	db, err := sql.Open("mysql", datasource)
 	if err != nil {

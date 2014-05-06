@@ -3,8 +3,8 @@
 //  package main
 //
 //  import (
-//    "github.com/codegangsta/martini"
-//    "github.com/codegangsta/martini-contrib/render"
+//    "github.com/go-martini/martini"
+//    "github.com/martini-contrib/render"
 //  )
 //
 //  func main() {
@@ -27,14 +27,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/codegangsta/martini"
 	"html/template"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
+
+	"github.com/go-martini/martini"
 )
 
 const (
@@ -42,6 +42,8 @@ const (
 	ContentLength  = "Content-Length"
 	ContentJSON    = "application/json"
 	ContentHTML    = "text/html"
+	ContentXHTML   = "application/xhtml+xml"
+	ContentBinary  = "application/octet-stream"
 	defaultCharset = "UTF-8"
 )
 
@@ -49,6 +51,9 @@ const (
 var helperFuncs = template.FuncMap{
 	"yield": func() (string, error) {
 		return "", fmt.Errorf("yield called with no layout defined")
+	},
+	"current": func() (string, error) {
+		return "", nil
 	},
 }
 
@@ -59,10 +64,18 @@ type Render interface {
 	JSON(status int, v interface{})
 	// HTML renders a html template specified by the name and writes the result and given status to the http.ResponseWriter.
 	HTML(status int, name string, v interface{}, htmlOpt ...HTMLOptions)
+	// Data writes the raw byte array to the http.ResponseWriter.
+	Data(status int, v []byte)
 	// Error is a convenience function that writes an http status to the http.ResponseWriter.
 	Error(status int)
-	// A convienience function that sends an HTTP redirect. If status is omitted, uses 302 (Found)
+	// Status is an alias for Error (writes an http status to the http.ResponseWriter)
+	Status(status int)
+	// Redirect is a convienience function that sends an HTTP redirect. If status is omitted, uses 302 (Found)
 	Redirect(location string, status ...int)
+	// Template returns the internal *template.Template used to render the HTML
+	Template() *template.Template
+	// Header exposes the header struct from http.ResponseWriter.
+	Header() http.Header
 }
 
 // Delims represents a set of Left and Right delimiters for HTML template rendering
@@ -87,6 +100,10 @@ type Options struct {
 	Delims Delims
 	// Appends the given charset to the Content-Type header. Default is "UTF-8".
 	Charset string
+	// Outputs human readable JSON
+	IndentJSON bool
+	// Allows changing of output to XHTML instead of HTML. Default is "text/html"
+	HTMLContentType string
 }
 
 // HTMLOptions is a struct for overriding some rendering Options for specific HTML call
@@ -106,11 +123,14 @@ func Renderer(options ...Options) martini.Handler {
 	cs := prepareCharset(opt.Charset)
 	t := compile(opt)
 	return func(res http.ResponseWriter, req *http.Request, c martini.Context) {
-		// recompile for easy development
+		var tc *template.Template
 		if martini.Env == martini.Dev {
-			t = compile(opt)
+			// recompile for easy development
+			tc = compile(opt)
+		} else {
+			// use a clone of the initial template
+			tc, _ = t.Clone()
 		}
-		tc, _ := t.Clone()
 		c.MapTo(&renderer{res, req, tc, opt, cs}, (*Render)(nil))
 	}
 }
@@ -135,6 +155,9 @@ func prepareOptions(options []Options) Options {
 	}
 	if len(opt.Extensions) == 0 {
 		opt.Extensions = []string{".tmpl"}
+	}
+	if len(opt.HTMLContentType) == 0 {
+		opt.HTMLContentType = ContentHTML
 	}
 
 	return opt
@@ -191,7 +214,13 @@ type renderer struct {
 }
 
 func (r *renderer) JSON(status int, v interface{}) {
-	result, err := json.Marshal(v)
+	var result []byte
+	var err error
+	if r.opt.IndentJSON {
+		result, err = json.MarshalIndent(v, "", "  ")
+	} else {
+		result, err = json.Marshal(v)
+	}
 	if err != nil {
 		http.Error(r, err.Error(), 500)
 		return
@@ -218,24 +247,25 @@ func (r *renderer) HTML(status int, name string, binding interface{}, htmlOpt ..
 	}
 
 	// template rendered fine, write out the result
-	r.Header().Set(ContentType, ContentHTML+r.compiledCharset)
-	r.Header().Set(ContentLength, strconv.Itoa(out.Len()))
+	r.Header().Set(ContentType, r.opt.HTMLContentType+r.compiledCharset)
 	r.WriteHeader(status)
 	io.Copy(r, out)
 }
 
-func (r *renderer) prepareHTMLOptions(htmlOpt []HTMLOptions) HTMLOptions {
-	if len(htmlOpt) > 0 {
-		return htmlOpt[0]
+func (r *renderer) Data(status int, v []byte) {
+	if r.Header().Get(ContentType) == "" {
+		r.Header().Set(ContentType, ContentBinary)
 	}
-
-	return HTMLOptions{
-		Layout: r.opt.Layout,
-	}
+	r.WriteHeader(status)
+	r.Write(v)
 }
 
 // Error writes the given HTTP status to the current ResponseWriter
 func (r *renderer) Error(status int) {
+	r.WriteHeader(status)
+}
+
+func (r *renderer) Status(status int) {
 	r.WriteHeader(status)
 }
 
@@ -246,6 +276,10 @@ func (r *renderer) Redirect(location string, status ...int) {
 	}
 
 	http.Redirect(r, r.req, location, code)
+}
+
+func (r *renderer) Template() *template.Template {
+	return r.t
 }
 
 func (r *renderer) execute(name string, binding interface{}) (*bytes.Buffer, error) {
@@ -260,6 +294,19 @@ func (r *renderer) addYield(name string, binding interface{}) {
 			// return safe html here since we are rendering our own template
 			return template.HTML(buf.String()), err
 		},
+		"current": func() (string, error) {
+			return name, nil
+		},
 	}
 	r.t.Funcs(funcs)
+}
+
+func (r *renderer) prepareHTMLOptions(htmlOpt []HTMLOptions) HTMLOptions {
+	if len(htmlOpt) > 0 {
+		return htmlOpt[0]
+	}
+
+	return HTMLOptions{
+		Layout: r.opt.Layout,
+	}
 }

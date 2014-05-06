@@ -22,7 +22,9 @@ func refute(t *testing.T, a interface{}, b interface{}) {
 
 func Test_New(t *testing.T) {
 	m := New()
-	refute(t, m, nil)
+	if m == nil {
+		t.Error("martini.New() cannot return nil")
+	}
 }
 
 func Test_Martini_Run(t *testing.T) {
@@ -122,4 +124,18 @@ func Test_Martini_Written(t *testing.T) {
 
 	ctx.run()
 	expect(t, ctx.Written(), true)
+}
+
+func Test_Martini_Basic_NoRace(t *testing.T) {
+	m := New()
+	handlers := []Handler{func() {}, func() {}}
+	// Ensure append will not realloc to trigger the race condition
+	m.handlers = handlers[:1]
+	req, _ := http.NewRequest("GET", "/", nil)
+	for i := 0; i < 2; i++ {
+		go func() {
+			response := httptest.NewRecorder()
+			m.ServeHTTP(response, req)
+		}()
+	}
 }

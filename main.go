@@ -1,12 +1,13 @@
 package main
 
 import (
-	"github.com/codegangsta/martini"
-	"github.com/codegangsta/martini-contrib/render"
-	_ "github.com/go-sql-driver/mysql"
 	"html/template"
 	"net/http"
 	"time"
+
+	"github.com/go-martini/martini"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/martini-contrib/render"
 )
 
 type Greeting struct {
@@ -18,11 +19,13 @@ type Greeting struct {
 
 func main() {
 	m := martini.Classic()
-
 	// 静的ファイルの利用
 	m.Use(martini.Static("static"))
+
 	// テンプレート関数の登録
 	m.Use(render.Renderer(render.Options{
+		Directory:  "templates",                // Specify what path to load the templates from.
+		Extensions: []string{".tmpl", ".html"}, // Specify extensions to load for templates.
 		Funcs: []template.FuncMap{{
 			"nl2br":      nl2br,
 			"htmlquote":  htmlquote,
@@ -30,12 +33,13 @@ func main() {
 			"dateformat": dateformat,
 		}},
 	}))
+
 	// データベース初期化
 	dbmap := initDb()
 	defer dbmap.Db.Close()
 
 	// トップページ
-	m.Get("/", func(w http.ResponseWriter, r *http.Request, render render.Render) {
+	m.Get("/", func(render render.Render) {
 		var greetings []Greeting
 		_, err := dbmap.Select(&greetings, "select * from greetings order by CreateAt desc")
 		if err != nil {
@@ -54,6 +58,5 @@ func main() {
 		dbmap.Insert(&greeting)
 		render.Redirect("/", 302)
 	})
-
 	m.Run()
 }

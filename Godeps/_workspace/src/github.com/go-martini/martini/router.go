@@ -2,7 +2,6 @@ package martini
 
 import (
 	"fmt"
-	"github.com/codegangsta/inject"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -14,6 +13,10 @@ type Params map[string]string
 
 // Router is Martini's de-facto routing interface. Supports HTTP verbs, stacked handlers, and dependency injection.
 type Router interface {
+	Routes
+
+	// Group adds a group where related routes can be added.
+	Group(string, func(Router), ...Handler)
 	// Get adds a route for a HTTP GET request to the specified matching pattern.
 	Get(string, ...Handler) Route
 	// Patch adds a route for a HTTP PATCH request to the specified matching pattern.
@@ -41,11 +44,31 @@ type Router interface {
 type router struct {
 	routes    []*route
 	notFounds []Handler
+	groups    []group
+}
+
+type group struct {
+	pattern  string
+	handlers []Handler
 }
 
 // NewRouter creates a new Router instance.
+// If you aren't using ClassicMartini, then you can add Routes as a
+// service with:
+//
+//	m := martini.New()
+//	r := martini.NewRouter()
+//	m.MapTo(r, (*martini.Routes)(nil))
+//
+// If you are using ClassicMartini, then this is done for you.
 func NewRouter() Router {
-	return &router{notFounds: []Handler{http.NotFound}}
+	return &router{notFounds: []Handler{http.NotFound}, groups: make([]group, 0)}
+}
+
+func (r *router) Group(pattern string, fn func(Router), h ...Handler) {
+	r.groups = append(r.groups, group{pattern, h})
+	fn(r)
+	r.groups = r.groups[:len(r.groups)-1]
 }
 
 func (r *router) Get(pattern string, h ...Handler) Route {
@@ -86,12 +109,7 @@ func (r *router) Handle(res http.ResponseWriter, req *http.Request, context Cont
 		if ok {
 			params := Params(vals)
 			context.Map(params)
-			r := routes{}
-			context.MapTo(r, (*Routes)(nil))
-			_, err := context.Invoke(route.Handle)
-			if err != nil {
-				panic(err)
-			}
+			route.Handle(context, res)
 			return
 		}
 	}
@@ -107,16 +125,47 @@ func (r *router) NotFound(handler ...Handler) {
 }
 
 func (r *router) addRoute(method string, pattern string, handlers []Handler) *route {
+	if len(r.groups) > 0 {
+		groupPattern := ""
+		h := make([]Handler, 0)
+		for _, g := range r.groups {
+			groupPattern += g.pattern
+			h = append(h, g.handlers...)
+		}
+
+		pattern = groupPattern + pattern
+		h = append(h, handlers...)
+		handlers = h
+	}
+
 	route := newRoute(method, pattern, handlers)
 	route.Validate()
 	r.routes = append(r.routes, route)
 	return route
 }
 
+func (r *router) findRoute(name string) *route {
+	for _, route := range r.routes {
+		if route.name == name {
+			return route
+		}
+	}
+
+	return nil
+}
+
 // Route is an interface representing a Route in Martini's routing layer.
 type Route interface {
 	// URLWith returns a rendering of the Route's url with the given string params.
 	URLWith([]string) string
+	// Name sets a name for the route.
+	Name(string)
+	// GetName returns the name of the route.
+	GetName() string
+	// Pattern returns the pattern of the route.
+	Pattern() string
+	// Method returns the method of the route.
+	Method() string
 }
 
 type route struct {
@@ -124,10 +173,11 @@ type route struct {
 	regex    *regexp.Regexp
 	handlers []Handler
 	pattern  string
+	name     string
 }
 
 func newRoute(method string, pattern string, handlers []Handler) *route {
-	route := route{method, nil, handlers, pattern}
+	route := route{method, nil, handlers, pattern, ""}
 	r := regexp.MustCompile(`:[^/#?()\.\\]+`)
 	pattern = r.ReplaceAllStringFunc(pattern, func(m string) string {
 		return fmt.Sprintf(`(?P<%s>[^/#?]+)`, m[1:])
@@ -175,6 +225,7 @@ func (r *route) Validate() {
 func (r *route) Handle(c Context, res http.ResponseWriter) {
 	context := &routeContext{c, 0, r.handlers}
 	c.MapTo(context, (*Context)(nil))
+	c.MapTo(r, (*Route)(nil))
 	context.run()
 }
 
@@ -200,16 +251,40 @@ func (r *route) URLWith(args []string) string {
 	return r.pattern
 }
 
+func (r *route) Name(name string) {
+	r.name = name
+}
+
+func (r *route) GetName() string {
+	return r.name
+}
+
+func (r *route) Pattern() string {
+	return r.pattern
+}
+
+func (r *route) Method() string {
+	return r.method
+}
+
 // Routes is a helper service for Martini's routing layer.
 type Routes interface {
 	// URLFor returns a rendered URL for the given route. Optional params can be passed to fulfill named parameters in the route.
-	URLFor(route Route, params ...interface{}) string
+	URLFor(name string, params ...interface{}) string
+	// MethodsFor returns an array of methods available for the path
+	MethodsFor(path string) []string
+	// All returns an array with all the routes in the router.
+	All() []Route
 }
 
-type routes struct{}
-
 // URLFor returns the url for the given route name.
-func (r routes) URLFor(route Route, params ...interface{}) string {
+func (r *router) URLFor(name string, params ...interface{}) string {
+	route := r.findRoute(name)
+
+	if route == nil {
+		panic("route not found")
+	}
+
 	var args []string
 	for _, param := range params {
 		switch v := param.(type) {
@@ -219,12 +294,43 @@ func (r routes) URLFor(route Route, params ...interface{}) string {
 			args = append(args, v)
 		default:
 			if v != nil {
-				panic("Arguments passed to UrlFor must be integers or strings")
+				panic("Arguments passed to URLFor must be integers or strings")
 			}
 		}
 	}
 
 	return route.URLWith(args)
+}
+
+func (r *router) All() []Route {
+	var ri = make([]Route, len(r.routes))
+
+	for i, route := range r.routes {
+		ri[i] = Route(route)
+	}
+
+	return ri
+}
+
+func hasMethod(methods []string, method string) bool {
+	for _, v := range methods {
+		if v == method {
+			return true
+		}
+	}
+	return false
+}
+
+// MethodsFor returns all methods available for path
+func (r *router) MethodsFor(path string) []string {
+	methods := []string{}
+	for _, route := range r.routes {
+		matches := route.regex.FindStringSubmatch(path)
+		if len(matches) > 0 && matches[0] == path && !hasMethod(methods, route.method) {
+			methods = append(methods, route.method)
+		}
+	}
+	return methods
 }
 
 type routeContext struct {
@@ -249,10 +355,9 @@ func (r *routeContext) run() {
 
 		// if the handler returned something, write it to the http response
 		if len(vals) > 0 {
-			rv := r.Get(inject.InterfaceOf((*http.ResponseWriter)(nil)))
 			ev := r.Get(reflect.TypeOf(ReturnHandler(nil)))
 			handleReturn := ev.Interface().(ReturnHandler)
-			handleReturn(rv.Interface().(http.ResponseWriter), vals)
+			handleReturn(r, vals)
 		}
 
 		if r.Written() {
